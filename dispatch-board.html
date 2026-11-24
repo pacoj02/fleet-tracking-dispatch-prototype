@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sample Carrier - Dispatch Board (Prototype)</title>
+<style>html,body{margin:0;background:#14171C;}</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ---------- constants ----------
+const STATUSES = ["Unassigned", "Assigned", "En Route", "Delivered"];
+const STATUS_COLOR = {
+  Unassigned: { bg: "#3A2420", text: "#E4572E", dot: "#E4572E" },
+  Assigned: { bg: "#33301C", text: "#F5A623", dot: "#F5A623" },
+  "En Route": { bg: "#1C2E3A", text: "#4FB4DE", dot: "#4FB4DE" },
+  Delivered: { bg: "#1C3324", text: "#4C9A6A", dot: "#4C9A6A" },
+};
+const DRIVER_STATUSES = ["Available", "On Job", "Off Duty"];
+const DRIVER_COLOR = {
+  Available: "#4C9A6A",
+  "On Job": "#F5A623",
+  "Off Duty": "#6B7280",
+};
+
+const STORAGE_KEY = "dispatch-board-data";
+
+const uid = () => Math.random().toString(36).slice(2, 9);
+
+const emptyJob = () => ({
+  id: uid(),
+  ticket: "",
+  customer: "",
+  origin: "",
+  destination: "",
+  scheduled: "",
+  status: "Unassigned",
+  driverId: "",
+  notes: "",
+  created: new Date().toISOString(),
+});
+
+const emptyDriver = () => ({
+  id: uid(),
+  name: "",
+  truck: "",
+  phone: "",
+  status: "Available",
+});
+
+// ---------- app ----------
+function DispatchBoard() {
+  const [drivers, setDrivers] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [showDriverForm, setShowDriverForm] = useState(false);
+  const [showJobForm, setShowJobForm] = useState(false);
+  const [driverDraft, setDriverDraft] = useState(emptyDriver());
+  const [jobDraft, setJobDraft] = useState(emptyJob());
+  const [expandedJob, setExpandedJob] = useState(null);
+  const [error, setError] = useState("");
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  // load
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = localStorage.getItem(STORAGE_KEY);
+        if (res) {
+          const parsed = JSON.parse(res);
+          setDrivers(parsed.drivers || []);
+          setJobs(parsed.jobs || []);
+        }
+      } catch (e) {
+        // key not found is fine for first run
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  const persist = useCallback(async (nextDrivers, nextJobs) => {
+    setSaving(true);
+    try {
+      localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ drivers: nextDrivers, jobs: nextJobs })
+      );
+      setError("");
+    } catch (e) {
+      setError("Couldn't save, changes may not persist.");
+    } finally {
+      setSaving(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (loaded) persist(drivers, jobs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drivers, jobs, loaded]);
+
+  // ---------- driver ops ----------
+  const addDriver = () => {
+    if (!driverDraft.name.trim()) return;
+    setDrivers((d) => [...d, { ...driverDraft, id: uid() }]);
+    setDriverDraft(emptyDriver());
+    setShowDriverForm(false);
+  };
+
+  const setDriverStatus = (id, status) => {
+    setDrivers((ds) => ds.map((d) => (d.id === id ? { ...d, status } : d)));
+  };
+
+  const removeDriver = (id) => {
+    setDrivers((ds) => ds.filter((d) => d.id !== id));
+    setJobs((js) => js.map((j) => (j.driverId === id ? { ...j, driverId: "" } : j)));
+  };
+
+  // ---------- job ops ----------
+  const addJob = () => {
+    if (!jobDraft.customer.trim() || !jobDraft.destination.trim()) return;
+    const ticket = jobDraft.ticket.trim() || `T-${1000 + jobs.length + 1}`;
+    setJobs((j) => [...j, { ...jobDraft, ticket, id: uid() }]);
+    setJobDraft(emptyJob());
+    setShowJobForm(false);
+  };
+
+  const updateJob = (id, patch) => {
+    setJobs((js) =>
+      js.map((j) => {
+        if (j.id !== id) return j;
+        const updated = { ...j, ...patch };
+        // auto status bump when a driver gets assigned to an unassigned job
+        if (patch.driverId && j.status === "Unassigned") {
+          updated.status = "Assigned";
+        }
+        if (patch.driverId === "" && (j.status === "Assigned" || j.status === "En Route")) {
+          updated.status = "Unassigned";
+        }
+        return updated;
+      })
+    );
+  };
+
+  const removeJob = (id) => {
+    setJobs((js) => js.filter((j) => j.id !== id));
+    setExpandedJob((e) => (e === id ? null : e));
+  };
+
+  const driverName = (id) => drivers.find((d) => d.id === id)?.name || "";
+
+  const availableDrivers = drivers.filter((d) => d.status !== "Off Duty");
+
+  const jobsByStatus = (status) => jobs.filter((j) => j.status === status);
+
+  const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const dateStr = now.toLocaleDateString([], { weekday: "short", month: "short", day: "numeric" });
+
+  return (
+    <div style={styles.app}>
+      <style>{fontImport}</style>
+
+      {/* header */}
+      <header style={styles.header}>
+        <div style={styles.headerLeft}>
+          <div style={styles.logoMark}>SC</div>
+          <div>
+            <div style={styles.brand}>SAMPLE CARRIER</div>
+            <div style={styles.brandSub}>Dispatch Board</div>
+          </div>
+        </div>
+        <div style={styles.headerRight}>
+          <div style={styles.clockWrap}>
+            <div style={styles.clockTime}>{timeStr}</div>
+            <div style={styles.clockDate}>{dateStr}</div>
+          </div>
+          <span style={styles.saveIndicator(saving)}>
+            {saving ? "SAVING…" : "SYNCED"}
+          </span>
+        </div>
+      </header>
+
+      {error && <div style={styles.errorBar}>{error}</div>}
+
+      <div style={styles.body}>
+        {/* roster sidebar */}
+        <aside style={styles.sidebar}>
+          <div style={styles.sidebarHead}>
+            <span style={styles.sidebarTitle}>ROSTER</span>
+            <button style={styles.smallAddBtn} onClick={() => setShowDriverForm((s) => !s)}>
+              {showDriverForm ? "×" : "+"}
+            </button>
+          </div>
+
+          {showDriverForm && (
+            <div style={styles.formCard}>
+              <input
+                style={styles.input}
+                placeholder="Driver name"
+                value={driverDraft.name}
+                onChange={(e) => setDriverDraft({ ...driverDraft, name: e.target.value })}
+              />
+              <input
+                style={styles.input}
+                placeholder="Truck # / unit"
+                value={driverDraft.truck}
+                onChange={(e) => setDriverDraft({ ...driverDraft, truck: e.target.value })}
+              />
+              <input
+                style={styles.input}
+                placeholder="Phone"
+                value={driverDraft.phone}
+                onChange={(e) => setDriverDraft({ ...driverDraft, phone: e.target.value })}
+              />
+              <button style={styles.primaryBtn} onClick={addDriver}>
+                Add driver
+              </button>
+            </div>
+          )}
+
+          <div style={styles.driverList}>
+            {drivers.length === 0 && !showDriverForm && (
+              <div style={styles.emptyNote}>No drivers on the roster yet.</div>
+            )}
+            {drivers.map((d) => (
+              <div key={d.id} style={styles.driverCard}>
+                <div style={styles.driverTop}>
+                  <span style={styles.driverName}>{d.name}</span>
+                  <button style={styles.ghostX} onClick={() => removeDriver(d.id)} title="Remove driver">
+                    ×
+                  </button>
+                </div>
+                <div style={styles.driverMeta}>
+                  {d.truck && <span>Unit {d.truck}</span>}
+                  {d.phone && <span> · {d.phone}</span>}
+                </div>
+                <select
+                  style={{ ...styles.statusSelect, color: DRIVER_COLOR[d.status] }}
+                  value={d.status}
+                  onChange={(e) => setDriverStatus(d.id, e.target.value)}
+                >
+                  {DRIVER_STATUSES.map((s) => (
+                    <option key={s} value={s} style={{ color: "#111" }}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+          </div>
+        </aside>
+
+        {/* board */}
+        <main style={styles.board}>
+          <div style={styles.boardHead}>
+            <span style={styles.boardTitle}>JOBS</span>
+            <button style={styles.primaryBtn} onClick={() => setShowJobForm((s) => !s)}>
+              {showJobForm ? "Cancel" : "+ New job"}
+            </button>
+          </div>
+
+          {showJobForm && (
+            <div style={styles.jobFormCard}>
+              <div style={styles.jobFormGrid}>
+                <input
+                  style={styles.input}
+                  placeholder="Ticket # (auto if blank)"
+                  value={jobDraft.ticket}
+                  onChange={(e) => setJobDraft({ ...jobDraft, ticket: e.target.value })}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Customer"
+                  value={jobDraft.customer}
+                  onChange={(e) => setJobDraft({ ...jobDraft, customer: e.target.value })}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Origin"
+                  value={jobDraft.origin}
+                  onChange={(e) => setJobDraft({ ...jobDraft, origin: e.target.value })}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Destination"
+                  value={jobDraft.destination}
+                  onChange={(e) => setJobDraft({ ...jobDraft, destination: e.target.value })}
+                />
+                <input
+                  style={styles.input}
+                  placeholder="Scheduled (e.g. 07/16 07:30)"
+                  value={jobDraft.scheduled}
+                  onChange={(e) => setJobDraft({ ...jobDraft, scheduled: e.target.value })}
+                />
+                <select
+                  style={styles.input}
+                  value={jobDraft.driverId}
+                  onChange={(e) => setJobDraft({ ...jobDraft, driverId: e.target.value })}
+                >
+                  <option value="">Assign driver (optional)</option>
+                  {drivers.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <textarea
+                style={{ ...styles.input, width: "100%", minHeight: 50, marginTop: 8 }}
+                placeholder="Notes"
+                value={jobDraft.notes}
+                onChange={(e) => setJobDraft({ ...jobDraft, notes: e.target.value })}
+              />
+              <button style={{ ...styles.primaryBtn, marginTop: 8 }} onClick={addJob}>
+                Create job
+              </button>
+            </div>
+          )}
+
+          <div style={styles.columns}>
+            {STATUSES.map((status) => (
+              <div key={status} style={styles.column}>
+                <div style={styles.columnHead}>
+                  <span style={{ ...styles.columnDot, background: STATUS_COLOR[status].dot }} />
+                  <span style={styles.columnTitle}>{status}</span>
+                  <span style={styles.columnCount}>{jobsByStatus(status).length}</span>
+                </div>
+                <div style={styles.columnList}>
+                  {jobsByStatus(status).length === 0 && (
+                    <div style={styles.emptyNote}>—</div>
+                  )}
+                  {jobsByStatus(status).map((j) => (
+                    <div key={j.id} style={styles.jobCard}>
+                      <div style={styles.jobCardTop}>
+                        <span style={styles.ticket}>{j.ticket}</span>
+                        <button style={styles.ghostX} onClick={() => removeJob(j.id)} title="Delete job">
+                          ×
+                        </button>
+                      </div>
+                      <div style={styles.jobCustomer}>{j.customer}</div>
+                      <div style={styles.jobRoute}>
+                        {j.origin || "—"} <span style={styles.arrow}>→</span> {j.destination}
+                      </div>
+                      {j.scheduled && <div style={styles.jobSched}>⏱ {j.scheduled}</div>}
+
+                      <div style={styles.jobControls}>
+                        <select
+                          style={styles.input}
+                          value={j.driverId}
+                          onChange={(e) => updateJob(j.id, { driverId: e.target.value })}
+                        >
+                          <option value="">Unassigned</option>
+                          {availableDrivers.map((d) => (
+                            <option key={d.id} value={d.id}>
+                              {d.name}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          style={{ ...styles.input, color: STATUS_COLOR[j.status].text }}
+                          value={j.status}
+                          onChange={(e) => updateJob(j.id, { status: e.target.value })}
+                        >
+                          {STATUSES.map((s) => (
+                            <option key={s} value={s} style={{ color: "#111" }}>
+                              {s}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {j.driverId && (
+                        <div style={styles.jobDriver}>Driver: {driverName(j.driverId)}</div>
+                      )}
+
+                      <button
+                        style={styles.notesToggle}
+                        onClick={() => setExpandedJob(expandedJob === j.id ? null : j.id)}
+                      >
+                        {expandedJob === j.id ? "Hide notes" : "Notes"}
+                      </button>
+                      {expandedJob === j.id && (
+                        <textarea
+                          style={{ ...styles.input, width: "100%", minHeight: 50, marginTop: 6 }}
+                          value={j.notes}
+                          onChange={(e) => updateJob(j.id, { notes: e.target.value })}
+                          placeholder="Add notes…"
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </main>
+      </div>
+    </div>
+  );
+}
+
+// ---------- styles ----------
+const fontImport = `
+@import url('https://fonts.googleapis.com/css2?family=Oswald:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+`;
+
+const styles = {
+  app: {
+    fontFamily: "'Inter', sans-serif",
+    background: "#14171C",
+    color: "#E8E6DE",
+    minHeight: "100vh",
+    display: "flex",
+    flexDirection: "column",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    padding: "14px 20px",
+    borderBottom: "1px solid #2A2E37",
+    background: "#181B21",
+  },
+  headerLeft: { display: "flex", alignItems: "center", gap: 12 },
+  logoMark: {
+    width: 38,
+    height: 38,
+    borderRadius: 6,
+    background: "#F5A623",
+    color: "#14171C",
+    fontFamily: "'Oswald', sans-serif",
+    fontWeight: 700,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    fontSize: 15,
+    letterSpacing: 0.5,
+  },
+  brand: {
+    fontFamily: "'Oswald', sans-serif",
+    fontWeight: 600,
+    fontSize: 16,
+    letterSpacing: 1,
+  },
+  brandSub: { fontSize: 11, color: "#8B8F99", letterSpacing: 1.5, textTransform: "uppercase" },
+  headerRight: { display: "flex", alignItems: "center", gap: 16 },
+  clockWrap: { textAlign: "right" },
+  clockTime: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: 18,
+    fontWeight: 500,
+    color: "#F5A623",
+    lineHeight: 1,
+  },
+  clockDate: { fontSize: 10, color: "#8B8F99", marginTop: 2, textTransform: "uppercase", letterSpacing: 1 },
+  saveIndicator: (saving) => ({
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: 10,
+    letterSpacing: 1,
+    color: saving ? "#F5A623" : "#4C9A6A",
+    border: `1px solid ${saving ? "#F5A623" : "#4C9A6A"}`,
+    borderRadius: 4,
+    padding: "3px 8px",
+  }),
+  errorBar: {
+    background: "#3A2420",
+    color: "#E4572E",
+    fontSize: 12,
+    padding: "6px 20px",
+    borderBottom: "1px solid #2A2E37",
+  },
+  body: { display: "flex", flex: 1, minHeight: 0 },
+  sidebar: {
+    width: 250,
+    borderRight: "1px solid #2A2E37",
+    padding: 16,
+    overflowY: "auto",
+    background: "#171A20",
+  },
+  sidebarHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
+  sidebarTitle: {
+    fontFamily: "'Oswald', sans-serif",
+    fontSize: 13,
+    letterSpacing: 1.5,
+    color: "#8B8F99",
+  },
+  smallAddBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 5,
+    background: "#F5A623",
+    color: "#14171C",
+    border: "none",
+    fontSize: 16,
+    fontWeight: 700,
+    cursor: "pointer",
+    lineHeight: 1,
+  },
+  formCard: {
+    background: "#1E222A",
+    border: "1px solid #2A2E37",
+    borderRadius: 8,
+    padding: 10,
+    display: "flex",
+    flexDirection: "column",
+    gap: 6,
+    marginBottom: 12,
+  },
+  input: {
+    background: "#14171C",
+    border: "1px solid #2E323C",
+    borderRadius: 6,
+    color: "#E8E6DE",
+    padding: "7px 9px",
+    fontSize: 12.5,
+    fontFamily: "'Inter', sans-serif",
+    outline: "none",
+  },
+  primaryBtn: {
+    background: "#F5A623",
+    color: "#14171C",
+    border: "none",
+    borderRadius: 6,
+    padding: "8px 12px",
+    fontWeight: 600,
+    fontSize: 12.5,
+    cursor: "pointer",
+  },
+  driverList: { display: "flex", flexDirection: "column", gap: 8 },
+  driverCard: {
+    background: "#1E222A",
+    border: "1px solid #2A2E37",
+    borderRadius: 8,
+    padding: 10,
+  },
+  driverTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  driverName: { fontWeight: 600, fontSize: 13.5 },
+  driverMeta: { fontSize: 11, color: "#8B8F99", marginTop: 2, fontFamily: "'JetBrains Mono', monospace" },
+  statusSelect: {
+    marginTop: 6,
+    width: "100%",
+    background: "#14171C",
+    border: "1px solid #2E323C",
+    borderRadius: 5,
+    padding: "5px 6px",
+    fontSize: 11.5,
+    fontWeight: 600,
+  },
+  ghostX: {
+    background: "none",
+    border: "none",
+    color: "#6B7280",
+    fontSize: 16,
+    cursor: "pointer",
+    lineHeight: 1,
+  },
+  emptyNote: { fontSize: 11.5, color: "#565B66", fontStyle: "italic" },
+  board: { flex: 1, padding: 20, overflowY: "auto", minWidth: 0 },
+  boardHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 },
+  boardTitle: {
+    fontFamily: "'Oswald', sans-serif",
+    fontSize: 18,
+    letterSpacing: 1.5,
+  },
+  jobFormCard: {
+    background: "#1E222A",
+    border: "1px solid #2A2E37",
+    borderRadius: 8,
+    padding: 14,
+    marginBottom: 16,
+  },
+  jobFormGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+    gap: 8,
+  },
+  columns: {
+    display: "grid",
+    gridTemplateColumns: "repeat(4, minmax(230px, 1fr))",
+    gap: 14,
+    overflowX: "auto",
+  },
+  column: { background: "#171A20", border: "1px solid #2A2E37", borderRadius: 10, padding: 10, minHeight: 200 },
+  columnHead: { display: "flex", alignItems: "center", gap: 6, marginBottom: 10, padding: "0 2px" },
+  columnDot: { width: 8, height: 8, borderRadius: "50%" },
+  columnTitle: {
+    fontFamily: "'Oswald', sans-serif",
+    fontSize: 12.5,
+    letterSpacing: 1,
+    textTransform: "uppercase",
+    flex: 1,
+  },
+  columnCount: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: 11,
+    color: "#8B8F99",
+  },
+  columnList: { display: "flex", flexDirection: "column", gap: 8 },
+  jobCard: {
+    background: "#1E222A",
+    border: "1px solid #2A2E37",
+    borderRadius: 8,
+    padding: 10,
+  },
+  jobCardTop: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  ticket: {
+    fontFamily: "'JetBrains Mono', monospace",
+    fontSize: 11,
+    color: "#F5A623",
+    fontWeight: 500,
+  },
+  jobCustomer: { fontWeight: 600, fontSize: 13, marginTop: 4 },
+  jobRoute: { fontSize: 11.5, color: "#B7BAC2", marginTop: 3 },
+  arrow: { color: "#565B66" },
+  jobSched: { fontSize: 11, color: "#8B8F99", marginTop: 4, fontFamily: "'JetBrains Mono', monospace" },
+  jobControls: { display: "flex", flexDirection: "column", gap: 6, marginTop: 8 },
+  jobDriver: { fontSize: 11, color: "#8B8F99", marginTop: 6 },
+  notesToggle: {
+    background: "none",
+    border: "none",
+    color: "#4FB4DE",
+    fontSize: 11,
+    cursor: "pointer",
+    padding: 0,
+    marginTop: 8,
+  },
+};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<DispatchBoard />);
+</script>
+</body>
+</html>
